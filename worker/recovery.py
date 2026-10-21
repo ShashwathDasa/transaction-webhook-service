@@ -15,7 +15,7 @@ ACTIVE_JOB_STATUSES = {"queued", "started", "deferred", "scheduled"}
 
 
 def enqueue_if_not_active(transaction_id: str) -> bool:
-    """Enqueue a transaction unless its original job is already active."""
+    """Enqueue a transaction unless an existing job is already queued."""
     job_id = f"transaction-{transaction_id}"
     existing_job = transaction_queue.fetch_job(job_id)
 
@@ -23,9 +23,11 @@ def enqueue_if_not_active(transaction_id: str) -> bool:
         job_status = existing_job.get_status(refresh=True)
         status_value = getattr(job_status, "value", job_status)
 
-        if status_value in ACTIVE_JOB_STATUSES:
-            if status_value != "started":
-                return False
+        if status_value in ACTIVE_JOB_STATUSES and status_value != "started":
+            return False
+
+        # The original job may still exist in Redis, so use a fresh ID.
+        job_id = f"recovery-{transaction_id}-{uuid4()}"
 
     transaction_queue.enqueue(process_transaction, transaction_id, job_id=job_id)
     return True
@@ -40,20 +42,24 @@ def run_recovery() -> None:
             recovered_processing_ids = recover_stale_transaction_ids(settings.stale_transaction_seconds)
 
             for transaction_id in recovered_processing_ids:
-                # Use a fresh ID because the original job may still be running.
-                transaction_queue.enqueue(process_transaction, transaction_id,
-                                          job_id=f"recovery-{transaction_id}-{uuid4()}")
-                logger.info("Requeued stale PROCESSING transaction: %s", transaction_id)
+                try:
+                    transaction_queue.enqueue(process_transaction, transaction_id,
+                                              job_id=f"recovery-{transaction_id}-{uuid4()}")
+                    logger.info("Requeued stale PROCESSING transaction: %s", transaction_id)
+                except Exception:
+                    logger.exception("Failed to requeue stale PROCESSING transaction: %s", transaction_id)
 
             stale_received_ids = get_stale_received_transaction_ids(settings.stale_transaction_seconds)
 
             for transaction_id in stale_received_ids:
-                # Avoid scheduling the same transaction twice in this cycle.
                 if transaction_id in recovered_processing_ids:
                     continue
 
-                if enqueue_if_not_active(transaction_id):
-                    logger.info("Requeued stale RECEIVED transaction: %s", transaction_id)
+                try:
+                    if enqueue_if_not_active(transaction_id):
+                        logger.info("Requeued stale RECEIVED transaction: %s", transaction_id)
+                except Exception:
+                    logger.exception("Failed to requeue stale RECEIVED transaction: %s", transaction_id)
 
         except Exception:
             logger.exception("Transaction recovery cycle failed")
