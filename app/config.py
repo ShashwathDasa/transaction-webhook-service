@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     processing_delay_seconds: int = 30
     recovery_interval_seconds: int = 60
     stale_transaction_seconds: int = 120
+    # Connections beyond the pool size are opened and closed per request,
+    # which is slow against a remote TLS database, so keep enough pooled.
+    database_pool_size: int = 20
+    database_max_overflow: int = 10
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
