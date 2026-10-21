@@ -287,6 +287,31 @@ The response includes:
 
 A missing transaction returns `404 Not Found`.
 
+### 4. Queue status
+
+`GET /v1/queue`
+
+Reports the processing backlog. The queue is clear when `queued_jobs` is `0`.
+
+Example:
+
+```bash
+curl -i https://transaction-webhook-service-zwca.onrender.com/v1/queue
+```
+
+```json
+{
+  "queue": "transactions",
+  "queued_jobs": 12,
+  "started_jobs": 2,
+  "failed_jobs": 0,
+  "workers": 2,
+  "busy_workers": 2
+}
+```
+
+Returns `503 Service Unavailable` if Redis cannot be reached.
+
 ### Transaction lifecycle
 
 | Status       | Meaning                                               |

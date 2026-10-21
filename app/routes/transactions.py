@@ -2,6 +2,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from rq import Worker
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -65,6 +66,25 @@ def receive_transaction(payload: TransactionWebhook, response: Response, session
         "transaction_id": transaction.transaction_id,
         "status": transaction.status,
     }
+
+
+@router.get("/queue")
+def get_queue_status():
+    """Report how many jobs are waiting and how many workers are busy."""
+    try:
+        workers = Worker.all(queue=transaction_queue)
+        return {
+            "queue": transaction_queue.name,
+            "queued_jobs": transaction_queue.count,
+            "started_jobs": transaction_queue.started_job_registry.count,
+            "failed_jobs": transaction_queue.failed_job_registry.count,
+            "workers": len(workers),
+            "busy_workers": sum(worker.get_state() == "busy" for worker in workers),
+        }
+    except Exception as exc:
+        logger.exception("queue_status_failed")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Queue status is unavailable.") from exc
 
 
 @router.get("/transactions/{transaction_id}")
