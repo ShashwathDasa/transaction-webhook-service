@@ -77,7 +77,6 @@ def get_queue_status():
             "queue": transaction_queue.name,
             "queued_jobs": transaction_queue.count,
             "started_jobs": transaction_queue.started_job_registry.count,
-            "failed_jobs": transaction_queue.failed_job_registry.count,
             "workers": len(workers),
             "busy_workers": sum(worker.get_state() == "busy" for worker in workers),
         }

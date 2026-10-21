@@ -133,6 +133,7 @@ transaction-webhook-service/
 ├── tests/
 │   ├── conftest.py
 │   ├── test_health.py
+│   ├── test_queue_status.py
 │   ├── test_received_recovery.py
 │   ├── test_recovery_enqueue.py
 │   ├── test_transaction_idempotency.py
@@ -144,6 +145,7 @@ transaction-webhook-service/
 ├── docker-compose.yml
 ├── start.sh
 ├── init_db.py
+├── load_test.py
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -325,7 +327,6 @@ curl -i https://transaction-webhook-service-zwca.onrender.com/v1/queue
   "queue": "transactions",
   "queued_jobs": 12,
   "started_jobs": 2,
-  "failed_jobs": 0,
   "workers": 2,
   "busy_workers": 2
 }
@@ -384,6 +385,27 @@ Submit the same webhook payload again with the same `transaction_id`.
 
 The API should return `202 Accepted` and reuse the existing transaction. Verify the stored record and database state to
 confirm that only one transaction exists for that ID.
+
+### Load test
+
+`load_test.py` sends concurrent webhooks and reports how many returned `202 Accepted` and how many took longer than
+500 ms, along with average, p95, and maximum response times. It uses only the Python standard library.
+
+```bash
+# Local service (default: http://localhost:8000)
+python load_test.py
+
+# Another deployment
+python load_test.py https://transaction-webhook-service-zwca.onrender.com
+```
+
+`LOAD_TEST_REQUESTS` (default `20`) and `LOAD_TEST_CONCURRENCY` (default `10`) change the number of webhooks and how many
+are sent at once. The script calls the health check first so that a cold start is not counted as webhook latency.
+
+Each request creates a real transaction. With the 30-second processing delay and two workers, 20 webhooks take about
+five minutes to process, and transactions submitted afterwards wait behind them. The script prints the queue status at
+the end; check `GET /v1/queue` until `queued_jobs` is `0` before running other tests. Measured times include the network
+round trip from wherever the script runs.
 
 ## Background Processing and Recovery
 
@@ -465,29 +487,52 @@ current state.
 
 ### FastAPI
 
-Provides request validation and the HTTP endpoints for health checks, webhook submissions, and transaction lookup.
+Provides Pydantic request validation, automatic OpenAPI documentation, and a small amount of code per endpoint. Invalid
+webhook payloads are rejected with `422` before reaching the database.
 
 ### PostgreSQL and SQLAlchemy
 
-Provide durable transaction storage and conditional updates for coordinating worker state transitions.
+PostgreSQL provides durable storage and the two features the design relies on: `INSERT ... ON CONFLICT` for idempotent
+inserts and conditional `UPDATE ... RETURNING` statements for safely claiming work. SQLAlchemy keeps a pool of open
+connections so concurrent webhooks do not each pay the cost of a new TLS connection to the database.
 
-### Redis and RQ
+### Redis and RQ instead of in-process background tasks
 
-Separate background processing from request handling so the API does not wait for the simulated processing delay.
+FastAPI's `BackgroundTasks` run inside the API process, so a restart or redeploy during the 30-second delay would lose
+the work. Jobs stored in Redis survive API restarts and are processed by separate worker processes. RQ was chosen over
+Celery because it needs only Redis and very little configuration, which is sufficient for a single job type.
+
+### Fast acknowledgement
+
+The webhook does only two things before responding: one `INSERT ... RETURNING` into PostgreSQL and one enqueue into
+Redis. The 30-second processing happens entirely in the worker, which keeps the response within the 500 ms target.
+
+### Idempotency at three levels
+
+- **Storage:** `transaction_id` is the primary key, and inserts use `ON CONFLICT DO NOTHING`, so duplicates never create
+  a second record. Repeated webhooks still receive `202 Accepted`.
+- **Scheduling:** only the request that created the record enqueues a job, and the job ID is derived from the
+  transaction ID (`transaction-{transaction_id}`).
+- **Processing:** a worker claims a transaction with a conditional `RECEIVED -> PROCESSING` update. If the same
+  transaction is somehow queued twice, only one worker can claim it.
 
 ### Processing tokens
 
-Help prevent stale worker attempts from writing a completion result after another attempt has taken ownership of the
-transaction.
+Each processing attempt stores a unique token with its claim and completes the transaction only if the token still
+matches. If a slow attempt is recovered and retried, the outdated attempt cannot overwrite the newer one.
 
 ### Recovery process
 
-Reduces the risk of transactions remaining unscheduled or stuck after certain worker or queue failures.
+Saving the transaction and enqueueing its job are separate operations, so either step can be interrupted. The recovery
+process periodically re-enqueues `RECEIVED` transactions that were never scheduled and resets `PROCESSING` transactions
+whose worker stopped, so transactions are not silently lost.
 
-### Docker and Docker Compose
+### Deployment
 
-Provide a reproducible local development environment with separate containers for the API, worker, recovery process,
-PostgreSQL, and Redis.
+Docker Compose runs each component in its own container locally. On Render's free tier, `start.sh` runs the API,
+workers, and recovery process in one container, and exits if any of them dies so Render restarts the service. The
+`SERVICE_ROLE` setting allows the API and workers to be deployed as separate services when more resources are
+available.
 
 ## Reliability Considerations and Limitations
 

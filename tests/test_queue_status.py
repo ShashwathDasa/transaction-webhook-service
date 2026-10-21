@@ -23,7 +23,6 @@ def test_queue_status_reports_queue_and_worker_counts(monkeypatch):
             "queue": "transactions-queue-status-test",
             "queued_jobs": 1,
             "started_jobs": 0,
-            "failed_jobs": 0,
             "workers": 0,
             "busy_workers": 0,
         }
