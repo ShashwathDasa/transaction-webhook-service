@@ -86,9 +86,30 @@ The recovery service periodically looks for stale transactions and attempts to s
 **Local development:** Docker Compose runs the API, worker, recovery service, PostgreSQL, and Redis as separate
 containers.
 
-**Render demonstration:** The web service runs the API, worker, and recovery process together using `start.sh`, while
-PostgreSQL and Redis-compatible Key Value run as separate hosted services. This combined-process setup is a free-tier
-demonstration workaround, not the recommended production architecture.
+**Render deployment:** PostgreSQL and Redis-compatible Key Value run as hosted services. The application image uses
+`start.sh`, which selects its processes with the `SERVICE_ROLE` environment variable:
+
+| `SERVICE_ROLE`  | Processes started                                   |
+|-----------------|-----------------------------------------------------|
+| `api`           | FastAPI application                                 |
+| `worker`        | `WORKER_COUNT` RQ workers and the recovery service  |
+| `all` (default) | All of the above in one container                   |
+
+Running the API and the background processes as separate Render services keeps the 30-second processing jobs from
+competing with webhook requests for CPU, which helps the webhook respond within 500 ms under load. `start.sh` exits when
+any of its processes dies, so Render restarts the service rather than leaving it partially running.
+
+#### Deploy as separate services on Render
+
+1. **Web Service** (Docker): set `SERVICE_ROLE=api`, plus `DATABASE_URL`, `REDIS_URL`, and `TRANSACTION_QUEUE_NAME`.
+2. **Background Worker** (Docker, same repository): set `SERVICE_ROLE=worker`, `WORKER_COUNT`, `DATABASE_URL`,
+   `REDIS_URL`, `TRANSACTION_QUEUE_NAME`, `PROCESSING_DELAY_SECONDS=30`, `RECOVERY_INTERVAL_SECONDS`, and
+   `STALE_TRANSACTION_SECONDS`.
+
+Both services must use the same database, Redis instance, and queue name. Use the internal connection URLs, with both
+services in the same region as PostgreSQL and Key Value. Render Background Workers are not available on the free
+instance type; `SERVICE_ROLE=all` runs everything in a single free web service at the cost of webhook latency under
+load.
 
 ## Project Structure
 
@@ -489,8 +510,8 @@ The current Render deployment is intended for demonstration and evaluation:
 - The free web service may spin down after inactivity, resulting in delayed responses while it starts again.
 - The free PostgreSQL database expires 30 days after creation.
 - Free Redis-compatible Key Value has limited resources and may not provide durable queue storage across restarts.
-- Running the API, worker, and recovery process in one web-service container is a temporary workaround; separate,
-  supervised services are preferable for production.
+- With `SERVICE_ROLE=all`, the API, workers, and recovery process share one container's CPU, so webhook latency rises
+  while jobs are running. Use separate `api` and `worker` services where possible.
 - Public availability, latency under load, and long-term persistence are not guaranteed by this free-tier configuration.
 
 Do not store important production data in this demonstration deployment.
@@ -525,7 +546,6 @@ Potential improvements include:
 
 - Use database migrations rather than relying on `create_all()` for schema changes.
 - Introduce a transactional outbox to coordinate transaction persistence and job scheduling more reliably.
-- Run the API, worker, and recovery service as separately supervised services in production.
 - Add integration tests for concurrent duplicate requests and real queue/database failure scenarios.
 - Add structured logs, metrics, alerting, and deployment monitoring.
 - Pin dependency versions for reproducible builds.
