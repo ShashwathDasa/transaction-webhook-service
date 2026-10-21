@@ -16,7 +16,8 @@ status lookup returning `PROCESSED`.
 
 > **Free-tier hosting notice:** The application is hosted on Render's free tier for demonstration and evaluation. The
 > web service may spin down after inactivity, causing cold-start delays. The free PostgreSQL database expires 30 days
-> after creation. Availability and data retention are therefore not guaranteed indefinitely. The deployment should not be
+> after creation. Availability and data retention are therefore not guaranteed indefinitely. The deployment should not
+> be
 > used for production workloads.
 
 ## Features
@@ -504,7 +505,3 @@ Potential improvements include:
 - Add structured logs, metrics, alerting, and deployment monitoring.
 - Pin dependency versions for reproducible builds.
 - Use durable queue storage and an appropriate backup strategy.
-
-## License
-
-Add a license if you intend to distribute or reuse this project under specific terms.
