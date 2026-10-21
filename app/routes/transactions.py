@@ -1,7 +1,7 @@
+import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from fastapi.logger import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,8 @@ from app.services.transaction_service import create_transaction
 from worker.tasks import process_transaction
 
 router = APIRouter()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def get_db():
