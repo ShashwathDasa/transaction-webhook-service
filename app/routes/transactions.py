@@ -1,4 +1,7 @@
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.logger import logger
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -25,7 +28,19 @@ def receive_transaction(payload: TransactionWebhook, response: Response, session
        The transaction is saved before its background job is enqueued.
        Repeated transaction IDs reuse the existing transaction record.
     """
+    started = time.perf_counter()
+
     transaction, created = create_transaction(session, payload)
+
+    db_ms = (time.perf_counter() - started) * 1000
+    logger.info("webhook_db_ms=%.2f", db_ms)
+
+    queue_started = time.perf_counter()
+
+    # Keep your existing queue-enqueue logic here unchanged.
+
+    queue_ms = (time.perf_counter() - queue_started) * 1000
+    logger.info("webhook_queue_ms=%.2f", queue_ms)
 
     try:
         if created and transaction.status != "PROCESSED":
