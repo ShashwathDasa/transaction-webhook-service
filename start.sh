@@ -11,13 +11,18 @@ uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" &
 API_PID=$!
 
 cleanup() {
+    trap - INT TERM EXIT
     kill "$API_PID" "$WORKER_PID" "$RECOVERY_PID" 2>/dev/null || true
-    wait || true
+    wait "$API_PID" "$WORKER_PID" "$RECOVERY_PID" 2>/dev/null || true
 }
 
-trap cleanup INT TERM
+trap cleanup INT TERM EXIT
 
-wait -n "$API_PID" "$WORKER_PID" "$RECOVERY_PID"
-STATUS=$?
-cleanup
-exit "$STATUS"
+# POSIX-compatible polling: exit if any child process dies.
+while kill -0 "$API_PID" 2>/dev/null &&
+      kill -0 "$WORKER_PID" 2>/dev/null &&
+      kill -0 "$RECOVERY_PID" 2>/dev/null; do
+    sleep 2
+done
+
+exit 1
