@@ -1,5 +1,5 @@
 """Background transaction processing and stale-job recovery."""
-
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -10,6 +10,8 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models import Transaction
 
+logger = logging.getLogger(__name__)
+
 
 def process_transaction(transaction_id: str) -> None:
     """Claim, process, and complete a transaction if the claim remains valid.
@@ -19,6 +21,8 @@ def process_transaction(transaction_id: str) -> None:
     been recovered by another worker.
     """
     processing_token = str(uuid4())
+
+    logger.info("worker_started transaction_id=%s", transaction_id)
 
     # Step 1: Atomically claim a RECEIVED transaction.
     with SessionLocal() as session:
@@ -37,8 +41,13 @@ def process_transaction(transaction_id: str) -> None:
             exists = session.scalar(
                 select(Transaction.transaction_id).where(Transaction.transaction_id == transaction_id))
             if exists is None:
+                logger.error("worker_transaction_not_found transaction_id=%s", transaction_id)
                 raise ValueError(f"Transaction {transaction_id} not found")
+
+            logger.warning("worker_claim_failed transaction_id=%s", transaction_id)
             return
+
+        logger.info("worker_claimed transaction_id=%s", transaction_id)
 
     # Step 2: Simulate the external operation.
     time.sleep(settings.processing_delay_seconds)
@@ -54,10 +63,14 @@ def process_transaction(transaction_id: str) -> None:
         )
 
         result = session.execute(statement)
+        updated_rows = result.rowcount
         session.commit()
 
+        logger.info("worker_completion transaction_id=%s updated_rows=%s", transaction_id, updated_rows)
+
         # If no row was updated, this attempt lost ownership.
-        if result.rowcount == 0:
+        if updated_rows == 0:
+            logger.warning("worker_lost_claim transaction_id=%s", transaction_id)
             return
 
 

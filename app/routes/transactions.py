@@ -13,7 +13,6 @@ from app.services.transaction_service import create_transaction
 from worker.tasks import process_transaction
 
 router = APIRouter()
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -27,32 +26,40 @@ def get_db():
 def receive_transaction(payload: TransactionWebhook, response: Response, session: Session = Depends(get_db)):
     """Accept a transaction webhook and schedule asynchronous processing.
 
-       The transaction is saved before its background job is enqueued.
-       Repeated transaction IDs reuse the existing transaction record.
+    The transaction is saved before its background job is enqueued.
+    Repeated transaction IDs reuse the existing transaction record.
     """
     started = time.perf_counter()
 
     transaction, created = create_transaction(session, payload)
 
     db_ms = (time.perf_counter() - started) * 1000
-    logger.info("webhook_db_ms=%.2f", db_ms)
-
-    queue_started = time.perf_counter()
-
-    # Keep your existing queue-enqueue logic here unchanged.
-
-    queue_ms = (time.perf_counter() - queue_started) * 1000
-    logger.info("webhook_queue_ms=%.2f", queue_ms)
+    logger.info("webhook_db_ms=%.3f transaction_id=%s created=%s status=%s", db_ms, transaction.transaction_id, created,
+                transaction.status)
 
     try:
         if created and transaction.status != "PROCESSED":
+            queue_started = time.perf_counter()
+
             transaction_queue.enqueue(process_transaction, transaction.transaction_id,
                                       job_id=f"transaction-{transaction.transaction_id}")
+
+            queue_ms = (time.perf_counter() - queue_started) * 1000
+
+            logger.info("webhook_queue_ms=%.3f transaction_id=%s", queue_ms, transaction.transaction_id)
+        else:
+            logger.info("webhook_enqueue_skipped transaction_id=%s created=%s status=%s", transaction.transaction_id,
+                        created, transaction.status)
+
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                            detail="Transaction saved, but job scheduling failed. Retry later.", ) from exc
+        logger.exception("webhook_enqueue_failed transaction_id=%s", transaction.transaction_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Transaction saved, but job scheduling failed. Retry later.",
+        ) from exc
 
     response.headers["X-Transaction-Created"] = str(created).lower()
+
     return {
         "message": "Transaction webhook received",
         "transaction_id": transaction.transaction_id,
