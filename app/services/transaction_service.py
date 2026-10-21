@@ -30,12 +30,16 @@ def create_transaction(session: Session, payload: TransactionWebhook) -> tuple[T
             currency=payload.currency.upper(),
             status="RECEIVED",
         )
-        .on_conflict_do_nothing(index_elements=[Transaction.transaction_id]).returning(Transaction.transaction_id)
+        .on_conflict_do_nothing(index_elements=[Transaction.transaction_id]).returning(Transaction)
     )
 
-    inserted_id = session.execute(statement).scalar_one_or_none()
+    # Returning the full row avoids a second query for new transactions.
+    transaction = session.scalars(statement).one_or_none()
     session.commit()
 
-    transaction = session.scalar(select(Transaction).where(Transaction.transaction_id == payload.transaction_id))
+    if transaction is not None:
+        return transaction, True
 
-    return transaction, inserted_id is not None
+    existing = session.scalar(select(Transaction).where(Transaction.transaction_id == payload.transaction_id))
+
+    return existing, False
