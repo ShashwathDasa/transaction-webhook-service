@@ -35,6 +35,8 @@ services:
     environment:
       DATABASE_URL: ${DOCKER_DATABASE_URL}
       REDIS_URL: ${DOCKER_REDIS_URL}
+      TRANSACTION_QUEUE_NAME: ${TRANSACTION_QUEUE_NAME:-transactions}
+      PROCESSING_DELAY_SECONDS: ${PROCESSING_DELAY_SECONDS:-30}
     depends_on:
       postgres:
         condition: service_healthy

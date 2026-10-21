@@ -24,7 +24,8 @@ def enqueue_if_not_active(transaction_id: str) -> bool:
         status_value = getattr(job_status, "value", job_status)
 
         if status_value in ACTIVE_JOB_STATUSES:
-            return False
+            if status_value != "started":
+                return False
 
     transaction_queue.enqueue(process_transaction, transaction_id, job_id=job_id)
     return True
