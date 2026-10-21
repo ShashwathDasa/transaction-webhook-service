@@ -1,32 +1,66 @@
 # Transaction Webhook Service
 
-A Python backend service that accepts transaction webhooks, acknowledges requests quickly, and processes transactions
-asynchronously. Built with FastAPI, PostgreSQL, Redis, and RQ.
+A Python backend service that accepts transaction webhooks, acknowledges them with `202 Accepted`, and processes
+transactions asynchronously. The service uses FastAPI, PostgreSQL, Redis, and RQ, with a separate recovery process for
+transactions that need to be scheduled again.
+
+> **Deployment status:** The application has been run locally with Docker Compose. Add the public GitHub repository URL
+> and verified public API URL below after publishing and deploying the service.
+
+- **Repository:** TODO — add public GitHub URL
+- **Public API:** TODO — add verified deployment URL
 
 ## Features
 
-- **Fast webhook acknowledgement:** Returns `202 Accepted` after accepting and persisting a transaction.
-- **Persistent storage:** Stores transaction details, status, and timestamps in PostgreSQL.
-- **Asynchronous processing:** Uses Redis and RQ to process transactions in the background with a 30-second delay.
-- **Idempotency:** Uses `transaction_id` as the primary key to prevent duplicate transaction records.
-- **Processing ownership:** Uses unique processing tokens to prevent an outdated worker attempt from overwriting a newer
-  attempt's state.
-- **Stale-job recovery:** Includes a function to reset transactions that remain in `PROCESSING` beyond a configurable
-  threshold.
-- **Input validation:** Validates webhook payloads using Pydantic.
-- **Containerized setup:** Runs the API, worker, PostgreSQL, and Redis using Docker Compose.
-- **Automated tests:** Covers health checks, input validation, webhook responses, idempotency, and worker recovery
-  behavior.
+- **Fast acknowledgement:** The webhook endpoint returns `202 Accepted` after the transaction is persisted and its
+  background job is scheduled.
+- **Persistent transaction state:** PostgreSQL stores transaction details, processing status, and timestamps.
+- **Asynchronous processing:** Redis and RQ run transaction processing outside the API request path. Processing includes
+  a configurable 30-second delay to simulate an external operation.
+- **Duplicate prevention:** `transaction_id` identifies a transaction uniquely, so repeated webhook requests do not
+  create duplicate transaction records.
+- **Processing ownership:** Conditional database updates and a unique processing token help prevent an outdated worker
+  attempt from overwriting the state produced by a newer attempt.
+- **Recovery process:** A dedicated service periodically looks for stale `PROCESSING` transactions and old `RECEIVED`
+  transactions that may need to be scheduled again.
+- **Input validation:** Pydantic validates webhook request payloads.
+- **Automated tests:** Tests cover health checks, validation, webhook responses, transaction idempotency, worker
+  idempotency, and recovery behavior.
 
 ## Tech Stack
 
-- Python 3.12
+- Python 3.12 (Docker image)
 - FastAPI and Uvicorn
 - PostgreSQL and SQLAlchemy
 - Redis and RQ
 - Pydantic and Pydantic Settings
 - Docker and Docker Compose
-- Pytest and HTTPX
+- Pytest
+
+## Architecture
+
+```text
+Client
+  |
+  v
+FastAPI API
+  |-- persist transaction --> PostgreSQL
+  |-- enqueue job ----------> Redis / RQ
+                                  |
+                                  v
+                              RQ Worker
+                                  |
+                                  v
+                              PostgreSQL
+
+Recovery Service ---> finds stale RECEIVED / PROCESSING transactions
+       |              and schedules eligible work through Redis / RQ
+       +------------------------------------------------------------>
+```
+
+The API persists the transaction before enqueueing its RQ job. The worker atomically claims a transaction by changing
+its status from `RECEIVED` to `PROCESSING`. Each processing attempt gets a unique token, and the worker completes the
+transaction only if that token still matches the database record.
 
 ## Project Structure
 
@@ -40,9 +74,13 @@ transaction-webhook-service/
 │   ├── schemas.py
 │   ├── queue.py
 │   ├── routes/
+│   │   ├── health.py
+│   │   └── transactions.py
 │   └── services/
+│       └── transaction_service.py
 ├── worker/
-│   └── tasks.py
+│   ├── tasks.py
+│   └── recovery.py
 ├── tests/
 │   ├── conftest.py
 │   ├── test_health.py
@@ -50,7 +88,9 @@ transaction-webhook-service/
 │   ├── test_webhook_response.py
 │   ├── test_webhook_validation.py
 │   ├── test_worker_idempotency.py
-│   └── test_worker_recovery.py
+│   ├── test_worker_recovery.py
+│   ├── test_received_recovery.py
+│   └── test_recovery_enqueue.py
 ├── Dockerfile
 ├── docker-compose.yml
 ├── init_db.py
@@ -63,31 +103,29 @@ transaction-webhook-service/
 
 - Docker Desktop with Docker Compose
 - Git
-- Python 3.12 or compatible Python version for running tests locally
+- Python 3.12 or a compatible Python version to run tests locally
 
-## Setup and Run
+## Run Locally with Docker Compose
 
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone <PUBLIC_GITHUB_REPOSITORY_URL>
 cd transaction-webhook-service
 ```
 
-Replace the repository URL with the public GitHub repository URL.
+Replace the placeholder with the repository URL after publishing it.
 
 ### 2. Configure environment variables
-
-Create a local environment file from the example:
 
 ```bash
 cp .env.example .env
 ```
 
-Review `.env` before starting the application. Ensure the PostgreSQL username, password, database name, and connection
-URLs are consistent.
+Review `.env` before starting. The example file is for local development only; do not use its credentials in a public
+deployment. Keep `.env` out of version control.
 
-The Docker Compose configuration uses these ports:
+The default local ports are:
 
 | Service    | Host port | Container port |
 |------------|----------:|---------------:|
@@ -95,39 +133,33 @@ The Docker Compose configuration uses these ports:
 | PostgreSQL |      5435 |           5432 |
 | Redis      |      6379 |           6379 |
 
-The PostgreSQL and Redis service names are used for connections between containers.
-
 ### 3. Start the services
 
 ```bash
 docker compose --env-file .env up --build -d
 ```
 
-Check the services:
-
-```bash
-docker compose --env-file .env ps
-```
-
-PostgreSQL and Redis should become healthy, and the API and worker should be running.
-
-### 4. Initialize the database
-
-The application tables can be created using:
+Create the database tables:
 
 ```bash
 docker compose --env-file .env exec api python init_db.py
 ```
 
-This command is intended for initial setup. It uses SQLAlchemy metadata to create missing tables.
+Check service status:
 
-### 5. Verify the health endpoint
+```bash
+docker compose --env-file .env ps
+```
+
+PostgreSQL and Redis should report as healthy. The API, worker, and recovery service should be running.
+
+### 4. Check the health endpoint
 
 ```bash
 curl -i http://localhost:8000/
 ```
 
-Expected response:
+Example response (the timestamp will vary):
 
 ```json
 {
@@ -136,31 +168,17 @@ Expected response:
 }
 ```
 
-The timestamp is an example; the actual value is generated at request time.
-
 ## API Endpoints
 
-### 1. Health Check
+### Health check
 
-**`GET /`**
+`GET /`
 
-Returns the service health status and current timestamp.
+Returns the service health status and current UTC timestamp.
 
-### 2. Submit a Transaction Webhook
+### Submit a transaction webhook
 
-**`POST /v1/webhooks/transactions`**
-
-Request body:
-
-```json
-{
-  "transaction_id": "txn_001",
-  "source_account": "account_a",
-  "destination_account": "account_b",
-  "amount": 125.50,
-  "currency": "INR"
-}
-```
+`POST /v1/webhooks/transactions`
 
 Example request:
 
@@ -176,7 +194,7 @@ curl -i -X POST http://localhost:8000/v1/webhooks/transactions \
   }'
 ```
 
-Expected response: `202 Accepted`.
+The endpoint returns `202 Accepted` when the transaction has been saved and its job scheduled. Example response:
 
 ```json
 {
@@ -186,63 +204,56 @@ Expected response: `202 Accepted`.
 }
 ```
 
-The API persists the transaction before returning and enqueues background processing through RQ.
+If the transaction is saved but job scheduling fails, the endpoint returns `503 Service Unavailable`; the response
+indicates that the transaction was saved and that scheduling should be retried. A repeated `transaction_id` reuses the
+existing transaction record rather than creating a second one.
 
-Submitting the same `transaction_id` does not create a second transaction record.
+### Retrieve transaction status
 
-### 3. Retrieve Transaction Status
-
-**`GET /v1/transactions/{transaction_id}`**
+`GET /v1/transactions/{transaction_id}`
 
 Example:
 
 ```bash
-curl -s http://localhost:8000/v1/transactions/txn_001
+curl -i http://localhost:8000/v1/transactions/txn_001
 ```
 
-The response includes transaction details, processing status, creation timestamp, and processing timestamp.
+The response contains the transaction ID, source and destination accounts, amount, currency, status, creation timestamp,
+and processing completion timestamp. A missing transaction returns `404 Not Found`.
 
-The processing states used by the service include:
+The transaction lifecycle includes these statuses:
 
-- `RECEIVED`
-- `PROCESSING`
-- `PROCESSED`
+- `RECEIVED` — transaction persisted and awaiting processing
+- `PROCESSING` — a worker has claimed the transaction
+- `PROCESSED` — processing completed
 
-The `processed_at` field is populated when processing completes.
+## Background Processing and Recovery
 
-## Background Processing
+The RQ worker simulates an external operation using the configured processing delay (30 seconds by default). It first
+atomically claims a transaction only if its current status is `RECEIVED`. The worker's final update checks both the
+`PROCESSING` status and the processing token for that attempt.
 
-The worker processes transactions asynchronously and includes a 30-second delay to simulate an external API call.
+The recovery service runs separately and periodically:
 
-The worker attempts to claim a transaction by conditionally changing its state from `RECEIVED` to `PROCESSING`. A unique
-processing token is assigned to each attempt. The final database update succeeds only if the transaction is still
-`PROCESSING` and the token matches the current attempt.
+- Resets stale `PROCESSING` transactions so they can be attempted again.
+- Finds older `RECEIVED` transactions that may not have been successfully scheduled.
+- Attempts to enqueue eligible transactions while checking the status of existing RQ jobs.
 
-This protects transaction state when an old worker attempt overlaps with a newer attempt.
-
-## Stale-Job Recovery
-
-The `recover_stale_transactions` function resets transactions that have remained in `PROCESSING` beyond a configurable
-threshold.
-
-**Current limitation:** The recovery function is implemented and tested, but periodic recovery is not automatically
-scheduled in the current Docker Compose configuration. It must be invoked or scheduled separately.
+Relevant settings are configurable through environment variables, including `PROCESSING_DELAY_SECONDS`,
+`RECOVERY_INTERVAL_SECONDS`, and `STALE_TRANSACTION_SECONDS`.
 
 ## Running Tests
 
-The automated tests use a separate PostgreSQL test database. They should not run against production data.
+The tests use a separate PostgreSQL database named `transactions_test`. Do not point the test configuration at a
+production database.
 
-### 1. Ensure PostgreSQL is running
-
-Start the local services:
+### 1. Start PostgreSQL
 
 ```bash
 docker compose --env-file .env up -d postgres
 ```
 
-### 2. Create the test database
-
-If the test database does not already exist, create it:
+### 2. Create the test database if it does not already exist
 
 ```bash
 docker compose --env-file .env exec postgres \
@@ -250,83 +261,79 @@ docker compose --env-file .env exec postgres \
   -c "CREATE DATABASE transactions_test;"
 ```
 
-If the database already exists, PostgreSQL will report that it exists; you do not need to recreate it.
-
-The current test fixture connects to:
+If PostgreSQL reports that the database already exists, you can continue. The test fixture currently connects to:
 
 ```text
 postgresql+psycopg://postgres:postgres@127.0.0.1:5435/transactions_test
 ```
 
-If you use different local credentials or ports, update `tests/conftest.py` accordingly.
+If you change local credentials or ports, update the connection URL in `tests/conftest.py` accordingly.
 
-### 3. Install dependencies
-
-Create and activate a virtual environment if needed, then run:
+### 3. Install dependencies in your local Python environment
 
 ```bash
-python -m pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
-### 4. Run the tests
-
-From the project root:
+### 4. Run the suite
 
 ```bash
-python -m pytest -q
+python3 -m pytest -q
 ```
 
-The current test suite has passed all 10 tests in the development environment.
+The latest reported local run completed with **16 tests passing**. Run the suite again after changes to confirm the
+current result.
 
 ## Technical Choices
 
 ### FastAPI
 
-FastAPI provides request validation, clear endpoint definitions, and an efficient way to build the webhook API.
+Provides request validation and a concise API implementation for webhook submission, health checks, and transaction
+lookup.
 
-### PostgreSQL
+### PostgreSQL and SQLAlchemy
 
-PostgreSQL provides durable storage and enforces uniqueness through the transaction primary key. The service uses
-conditional database updates to coordinate processing state.
+Provide persistent transaction storage, a unique transaction identifier, and conditional updates for coordinating worker
+state transitions.
 
 ### Redis and RQ
 
-Redis and RQ allow background processing to run separately from the request-handling API, so the API does not wait for
-the simulated 30-second operation.
+Separate background processing from request handling so the API does not wait for the simulated 30-second operation to
+finish.
 
 ### Processing tokens
 
-Unique processing tokens help prevent stale worker attempts from overwriting the database state of a newer attempt.
+Help prevent a stale worker attempt from writing a completion result after another attempt has taken ownership of the
+transaction.
 
 ### Docker Compose
 
-Docker Compose provides a repeatable local environment for running the API, worker, database, and queue.
+Runs the API, worker, recovery process, PostgreSQL, and Redis in a repeatable local environment.
 
 ## Reliability Considerations and Limitations
 
-The service implements persistent transaction records, duplicate prevention, conditional processing claims, and
-stale-processing recovery logic.
+The transaction is committed to PostgreSQL before the API enqueues the corresponding RQ job. PostgreSQL persistence and
+Redis enqueueing are not a single atomic operation. The API reports a scheduling failure if enqueueing fails, and the
+recovery service periodically looks for transactions that may need to be scheduled again. These mechanisms reduce the
+risk of stranded work, but they are not equivalent to an atomic delivery guarantee.
 
-However, PostgreSQL persistence and Redis job enqueueing are not one atomic operation. If the transaction is committed
-to PostgreSQL but enqueueing fails, the transaction can remain unprocessed unless a retry or recovery path successfully
-schedules it.
+The processing token protects database state from stale worker attempts. If the simulated operation is replaced by a
+real external side effect, that external system may also need its own idempotency key or deduplication mechanism; a
+database token alone cannot undo an external side effect.
 
-A transactional outbox or equivalent durable scheduling mechanism would strengthen delivery guarantees. The current
-recovery function is not automatically scheduled.
+The application has been run locally with Docker Compose and the automated test suite. Public deployment, latency under
+load, and behavior during real Redis or worker outages should be verified separately before describing the service as
+production-ready.
 
-The service has been validated locally using Docker Compose and automated tests. Public deployment and production
-failure-recovery behavior must be verified separately.
-
-## Stopping the Services
+## Stop the Services
 
 ```bash
 docker compose --env-file .env down
 ```
 
-This stops the containers while preserving the named PostgreSQL volume.
+This stops the containers and preserves the named PostgreSQL volume.
 
-To delete the persisted local database volume as well, use the following only when you intentionally want to remove that
-data:
+To also delete the local database volume, use the following only if you intentionally want to remove its data:
 
 ```bash
 docker compose --env-file .env down -v
@@ -334,7 +341,7 @@ docker compose --env-file .env down -v
 
 ## Deployment
 
-The application is intended to be deployed with a publicly accessible API endpoint. A deployment must run the API,
-background worker, PostgreSQL, and Redis with correctly configured connection URLs.
+**Public API URL:** TODO — add the verified deployed endpoint.
 
-The public endpoint and deployment instructions should be added here after deployment has been completed and verified.
+After deployment, document the hosting platform, required environment variables, and any public testing instructions
+here. Do not publish database credentials, Redis URLs containing secrets, or other private configuration values.
