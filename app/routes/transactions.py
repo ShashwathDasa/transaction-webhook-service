@@ -28,7 +28,7 @@ def receive_transaction(payload: TransactionWebhook, response: Response, session
     transaction, created = create_transaction(session, payload)
 
     try:
-        if transaction.status != "PROCESSED":
+        if created and transaction.status != "PROCESSED":
             transaction_queue.enqueue(process_transaction, transaction.transaction_id,
                                       job_id=f"transaction-{transaction.transaction_id}")
     except Exception as exc:

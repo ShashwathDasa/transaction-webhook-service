@@ -44,3 +44,37 @@ def test_duplicate_transaction_is_stored_once(test_db, monkeypatch):
 
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+def test_duplicate_webhook_enqueues_only_once(test_db, monkeypatch):
+    def override_get_db():
+        with test_db() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    enqueue_calls = []
+
+    def fake_enqueue(*args, **kwargs):
+        enqueue_calls.append((args, kwargs))
+
+    monkeypatch.setattr(transaction_queue, "enqueue", fake_enqueue)
+
+    payload = {
+        "transaction_id": "txn_enqueue_once",
+        "source_account": "acc_source",
+        "destination_account": "acc_destination",
+        "amount": "100.00",
+        "currency": "INR",
+    }
+
+    try:
+        with TestClient(app) as client:
+            first = client.post("/v1/webhooks/transactions", json=payload)
+            second = client.post("/v1/webhooks/transactions", json=payload)
+
+        assert first.status_code == 202
+        assert second.status_code == 202
+        assert len(enqueue_calls) == 1
+
+    finally:
+        app.dependency_overrides.pop(get_db, None)

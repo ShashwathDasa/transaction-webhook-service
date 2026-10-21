@@ -5,8 +5,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      TRANSACTION_QUEUE_NAME: ${TRANSACTION_QUEUE_NAME:-transactions}
-      PROCESSING_DELAY_SECONDS: ${PROCESSING_DELAY_SECONDS:-30}
     ports:
       - "5435:5432"
     volumes:
@@ -28,6 +26,7 @@ services:
       retries: 10
 
   api:
+    restart: unless-stopped
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
@@ -44,6 +43,7 @@ services:
         condition: service_healthy
 
   worker:
+    restart: unless-stopped
     build: .
     command: rq worker --url ${DOCKER_REDIS_URL} ${TRANSACTION_QUEUE_NAME:-transactions}
     environment:
