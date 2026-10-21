@@ -7,6 +7,7 @@ TransactionId = Annotated[str, StringConstraints(min_length=1, max_length=128, s
 
 
 class TransactionWebhook(BaseModel):
+    """Validate the payload received by the transaction webhook."""
     transaction_id: TransactionId
     source_account: str = Field(min_length=1, max_length=128)
     destination_account: str = Field(min_length=1, max_length=128)

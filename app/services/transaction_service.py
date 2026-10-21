@@ -7,6 +7,19 @@ from app.schemas import TransactionWebhook
 
 
 def create_transaction(session: Session, payload: TransactionWebhook) -> tuple[Transaction, bool]:
+    """Create a transaction if its ID has not been stored already.
+
+        Uses PostgreSQL conflict handling to prevent duplicate transaction
+        records when the same transaction ID is submitted multiple times.
+
+        Args:
+            session: SQLAlchemy session used for database operations.
+            payload: Validated transaction webhook data.
+
+        Returns:
+            A tuple containing the stored transaction and a boolean indicating
+            whether this call inserted a new record.
+        """
     statement = (
         insert(Transaction)
         .values(
@@ -17,10 +30,7 @@ def create_transaction(session: Session, payload: TransactionWebhook) -> tuple[T
             currency=payload.currency.upper(),
             status="RECEIVED",
         )
-        .on_conflict_do_nothing(
-            index_elements=[Transaction.transaction_id]
-        )
-        .returning(Transaction.transaction_id)
+        .on_conflict_do_nothing(index_elements=[Transaction.transaction_id]).returning(Transaction.transaction_id)
     )
 
     inserted_id = session.execute(statement).scalar_one_or_none()

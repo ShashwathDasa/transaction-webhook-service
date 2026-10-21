@@ -1,15 +1,23 @@
+"""Background transaction processing and stale-job recovery."""
+
 import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import select, update
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models import Transaction
 
 
-def process_transaction(transaction_id: str):
-    # Each attempt gets a unique ownership token.
+def process_transaction(transaction_id: str) -> None:
+    """Claim, process, and complete a transaction if the claim remains valid.
+
+    A unique token identifies each processing attempt. This prevents an
+    outdated attempt from completing a transaction after its claim has
+    been recovered by another worker.
+    """
     processing_token = str(uuid4())
 
     # Step 1: Atomically claim a RECEIVED transaction.
@@ -27,14 +35,13 @@ def process_transaction(transaction_id: str):
 
         if claimed_id is None:
             exists = session.scalar(
-                select(Transaction.transaction_id).where(Transaction.transaction_id == transaction_id)
-            )
+                select(Transaction.transaction_id).where(Transaction.transaction_id == transaction_id))
             if exists is None:
                 raise ValueError(f"Transaction {transaction_id} not found")
             return
 
     # Step 2: Simulate the external operation.
-    time.sleep(30)
+    time.sleep(settings.processing_delay_seconds)
 
     # Step 3: Complete only if this attempt still owns the claim.
     with SessionLocal() as session:
@@ -54,7 +61,8 @@ def process_transaction(transaction_id: str):
             return
 
 
-def recover_stale_transactions(stale_after_seconds: int = 120) -> int:
+def recover_stale_transaction_ids(stale_after_seconds: int = 120) -> list[str]:
+    """Reset stale transactions and return their IDs for requeueing."""
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
 
     with SessionLocal() as session:
@@ -62,9 +70,27 @@ def recover_stale_transactions(stale_after_seconds: int = 120) -> int:
             update(Transaction)
             .where(Transaction.status == "PROCESSING", Transaction.processing_started_at < cutoff)
             .values(status="RECEIVED", processing_started_at=None, processing_token=None)
+            .returning(Transaction.transaction_id)
         )
 
-        result = session.execute(statement)
+        transaction_ids = list(session.scalars(statement).all())
         session.commit()
 
-        return result.rowcount or 0
+        return transaction_ids
+
+
+def recover_stale_transactions(stale_after_seconds: int = 120) -> int:
+    """Reset stale transactions and return the number recovered."""
+    return len(recover_stale_transaction_ids(stale_after_seconds))
+
+
+def get_stale_received_transaction_ids(stale_after_seconds: int = 120) -> list[str]:
+    """Find old RECEIVED transactions that may have missed queue scheduling."""
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)
+
+    with SessionLocal() as session:
+        statement = (
+            select(Transaction.transaction_id)
+            .where(Transaction.status == "RECEIVED", Transaction.created_at < cutoff)
+        )
+        return list(session.scalars(statement).all())

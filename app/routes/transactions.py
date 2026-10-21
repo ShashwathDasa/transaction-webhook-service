@@ -13,12 +13,18 @@ router = APIRouter()
 
 
 def get_db():
+    """Provide a database session for the duration of a request."""
     with SessionLocal() as session:
         yield session
 
 
 @router.post("/webhooks/transactions", status_code=status.HTTP_202_ACCEPTED)
 def receive_transaction(payload: TransactionWebhook, response: Response, session: Session = Depends(get_db)):
+    """Accept a transaction webhook and schedule asynchronous processing.
+
+       The transaction is saved before its background job is enqueued.
+       Repeated transaction IDs reuse the existing transaction record.
+    """
     transaction, created = create_transaction(session, payload)
 
     try:
@@ -39,6 +45,7 @@ def receive_transaction(payload: TransactionWebhook, response: Response, session
 
 @router.get("/transactions/{transaction_id}")
 def get_transaction(transaction_id: str, session: Session = Depends(get_db)):
+    """Retrieve a transaction by ID or return 404 if it does not exist."""
     transaction = session.scalar(
         select(Transaction).where(Transaction.transaction_id == transaction_id))
 
